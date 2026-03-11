@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import joblib
-from tensorflow.keras.models import Sequential
+from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.layers import LSTM, Dense
 
 st.set_page_config(layout="wide", initial_sidebar_state="collapsed")
@@ -64,17 +64,21 @@ xgb_model = joblib.load("xgboost_aqi_model.pkl")
 feature_columns = joblib.load("feature_columns.pkl")
 
 # =========================
-# RECREATE LSTM MODEL
+# LSTM MODEL
 # =========================
 lstm_model = Sequential([
     LSTM(64, activation="tanh", input_shape=(WINDOW, len(FEATURES))),
     Dense(1)
 ])
-
 lstm_model.load_weights("aqi_lstm_model.h5")
 
 # =========================
-# AQI CATEGORY FUNCTION
+# GRU MODEL
+# =========================
+gru_model = load_model("aqi_gru_model.h5", compile=False)
+
+# =========================
+# AQI CATEGORY
 # =========================
 def categorize_aqi(aqi):
 
@@ -91,7 +95,6 @@ def categorize_aqi(aqi):
     else:
         return "Hazardous"
 
-
 def get_color(category):
 
     if category == "Good":
@@ -104,62 +107,59 @@ def get_color(category):
         return "#dc2626"
 
 # =========================
-# POLLUTANT → DISEASE MAP
+# HEALTH RISKS
 # =========================
 pollutant_disease_risks = {
 
-    "PM2.5":[
-        "Asthma attacks",
-        "Bronchitis",
-        "Reduced lung function",
-        "Heart disease risk",
-        "Lung cancer"
-    ],
+"PM2.5":[
+"Asthma attacks",
+"Bronchitis",
+"Reduced lung function",
+"Heart disease risk",
+"Lung cancer"
+],
 
-    "PM10":[
-        "Respiratory irritation",
-        "Asthma aggravation",
-        "Bronchitis",
-        "Reduced lung capacity"
-    ],
+"PM10":[
+"Respiratory irritation",
+"Asthma aggravation",
+"Bronchitis",
+"Reduced lung capacity"
+],
 
-    "NO2":[
-        "Inflammation of airways",
-        "Asthma worsening",
-        "Respiratory infections"
-    ],
+"NO2":[
+"Inflammation of airways",
+"Asthma worsening",
+"Respiratory infections"
+],
 
-    "SO2":[
-        "Breathing difficulty",
-        "Asthma attacks",
-        "Bronchial irritation"
-    ],
+"SO2":[
+"Breathing difficulty",
+"Asthma attacks",
+"Bronchial irritation"
+],
 
-    "CO":[
-        "Reduced oxygen supply",
-        "Headaches",
-        "Dizziness",
-        "Heart stress"
-    ],
+"CO":[
+"Reduced oxygen supply",
+"Headaches",
+"Dizziness",
+"Heart stress"
+],
 
-    "O3":[
-        "Chest pain",
-        "Coughing",
-        "Lung inflammation",
-        "Reduced lung function"
-    ]
+"O3":[
+"Chest pain",
+"Coughing",
+"Lung inflammation",
+"Reduced lung function"
+]
 }
 
-# =========================
-# CPCB SAFE LIMITS
-# =========================
 pollutant_thresholds = {
-    "PM2.5": 60,
-    "PM10": 100,
-    "NO2": 80,
-    "SO2": 80,
-    "CO": 2,
-    "O3": 100
+"PM2.5":60,
+"PM10":100,
+"NO2":80,
+"SO2":80,
+"CO":2,
+"O3":100
 }
 
 # =========================
@@ -195,103 +195,154 @@ if predict:
 
     else:
 
-        # =========================
-        # LSTM PREDICTION
-        # =========================
         input_data = city_df.tail(WINDOW)[FEATURES].values
         input_scaled = scaler.transform(input_data)
 
-        predictions_lstm = []
-        current_window = input_scaled.copy()
+        # =========================
+        # LSTM
+        # =========================
+        predictions_lstm=[]
+        current_window=input_scaled.copy()
 
         for _ in range(5):
 
-            reshaped = current_window.reshape(1,WINDOW,len(FEATURES))
-            pred_scaled = lstm_model.predict(reshaped, verbose=0)[0][0]
+            reshaped=current_window.reshape(1,WINDOW,len(FEATURES))
+            pred_scaled=lstm_model.predict(reshaped,verbose=0)[0][0]
 
-            aqi_mean = scaler.mean_[0]
-            aqi_std = scaler.scale_[0]
+            aqi_mean=scaler.mean_[0]
+            aqi_std=scaler.scale_[0]
 
-            pred_aqi = (pred_scaled * aqi_std) + aqi_mean
+            pred_aqi=(pred_scaled*aqi_std)+aqi_mean
             predictions_lstm.append(pred_aqi)
 
-            new_row = current_window[-1].copy()
-            new_row[0] = pred_scaled
-            current_window = np.vstack([current_window[1:], new_row])
+            new_row=current_window[-1].copy()
+            new_row[0]=pred_scaled
 
-        lstm_aqi = float(predictions_lstm[-1])
-        lstm_category = categorize_aqi(lstm_aqi)
-        card_color = get_color(lstm_category)
+            current_window=np.vstack([current_window[1:],new_row])
 
-        trend = "Rising" if predictions_lstm[-1] > predictions_lstm[0] else "Falling"
+        lstm_aqi=float(predictions_lstm[-1])
+        lstm_category=categorize_aqi(lstm_aqi)
 
         # =========================
-        # TREE MODEL INPUT
+        # GRU
         # =========================
-        latest = city_df.tail(1).copy()
+        predictions_gru=[]
+        current_window=input_scaled.copy()
 
-        latest["Month"] = latest["Date"].dt.month
-        latest["DayOfWeek"] = latest["Date"].dt.dayofweek
+        for _ in range(5):
 
-        latest_input = latest[
-            ["City","PM2.5","PM10","NO2","SO2","CO","O3","Month","DayOfWeek"]
+            reshaped=current_window.reshape(1,WINDOW,len(FEATURES))
+            pred_scaled=gru_model.predict(reshaped,verbose=0)[0][0]
+
+            aqi_mean=scaler.mean_[0]
+            aqi_std=scaler.scale_[0]
+
+            pred_aqi=(pred_scaled*aqi_std)+aqi_mean
+            predictions_gru.append(pred_aqi)
+
+            new_row=current_window[-1].copy()
+            new_row[0]=pred_scaled
+
+            current_window=np.vstack([current_window[1:],new_row])
+
+        gru_aqi=float(predictions_gru[-1])
+        gru_category=categorize_aqi(gru_aqi)
+
+        card_color=get_color(lstm_category)
+
+        # =========================
+        # TREE MODELS
+        # =========================
+        latest=city_df.tail(1).copy()
+
+        latest["Month"]=latest["Date"].dt.month
+        latest["DayOfWeek"]=latest["Date"].dt.dayofweek
+
+        latest_input=latest[
+        ["City","PM2.5","PM10","NO2","SO2","CO","O3","Month","DayOfWeek"]
         ]
 
-        latest_input = pd.get_dummies(latest_input, columns=["City"], drop_first=True)
+        latest_input=pd.get_dummies(latest_input,columns=["City"],drop_first=True)
 
-        latest_input = latest_input.reindex(columns=feature_columns, fill_value=0)
+        latest_input=latest_input.reindex(columns=feature_columns,fill_value=0)
 
-        # =========================
-        # RF + XGB PREDICTION
-        # =========================
-        rf_aqi = float(rf_model.predict(latest_input)[0])
-        rf_category = categorize_aqi(rf_aqi)
+        rf_aqi=float(rf_model.predict(latest_input)[0])
+        rf_category=categorize_aqi(rf_aqi)
 
-        xgb_aqi = float(xgb_model.predict(latest_input)[0])
-        xgb_category = categorize_aqi(xgb_aqi)
+        xgb_aqi=float(xgb_model.predict(latest_input)[0])
+        xgb_category=categorize_aqi(xgb_aqi)
 
         # =========================
         # KPI CARDS
         # =========================
         st.markdown("---")
 
-        c1,c2,c3,c4 = st.columns(4)
+        c1,c2,c3,c4=st.columns(4)
 
         c1.markdown(
         f'<div class="card" style="background:{card_color};">Predicted AQI<br><h2>{lstm_aqi:.2f}</h2>{lstm_category}</div>',
-        unsafe_allow_html=True
-        )
+        unsafe_allow_html=True)
+
+        trend="Rising" if predictions_lstm[-1]>predictions_lstm[0] else "Falling"
 
         c2.markdown(
         f'<div class="card" style="background:{card_color};">AQI Trend<br><h2>{trend}</h2></div>',
-        unsafe_allow_html=True
-        )
+        unsafe_allow_html=True)
 
-        latest_pollutants = city_df.tail(1)[FEATURES].iloc[0]
-        dominant_pollutant = latest_pollutants[1:].idxmax()
+        latest_pollutants=city_df.tail(1)[FEATURES].iloc[0]
+
+        dominant_pollutant=latest_pollutants[1:].idxmax()
 
         c3.markdown(
         f'<div class="card" style="background:{card_color};">Dominant Pollutant<br><h2>{dominant_pollutant}</h2></div>',
-        unsafe_allow_html=True
-        )
+        unsafe_allow_html=True)
 
         c4.markdown(
         f'<div class="card" style="background:{card_color};">Health Risk<br><h2>{lstm_category}</h2></div>',
-        unsafe_allow_html=True
-        )
+        unsafe_allow_html=True)
 
         # =========================
         # TREND GRAPH
         # =========================
-        st.markdown('<div class="section-title">AQI Prediction Trend (LSTM)</div>', unsafe_allow_html=True)
+        st.markdown(
+'       <div class="section-title">AQI Prediction Trend (All Models)</div>',
+        unsafe_allow_html=True
+        )
+
+        days = list(range(1,6))
 
         fig = go.Figure()
 
+        # LSTM
         fig.add_trace(go.Scatter(
-            x=list(range(1,6)),
+            x=days,
             y=predictions_lstm,
             mode='lines+markers',
-            name="LSTM Forecast"
+            name="LSTM"
+        ))
+
+        # GRU
+        fig.add_trace(go.Scatter(
+         x=days,
+            y=predictions_gru,
+            mode='lines+markers',
+            name="GRU"
+        ))
+
+        # Random Forest
+        fig.add_trace(go.Scatter(
+            x=days,
+            y=[rf_aqi]*5,
+            mode='lines+markers',
+            name="Random Forest"
+        ))
+
+        # XGBoost
+        fig.add_trace(go.Scatter(
+            x=days,
+            y=[xgb_aqi]*5,
+            mode='lines+markers',
+            name="XGBoost"
         ))
 
         st.plotly_chart(fig, use_container_width=True)
@@ -301,43 +352,45 @@ if predict:
         # =========================
         st.markdown('<div class="section-title">Model Comparison</div>', unsafe_allow_html=True)
 
-        comparison_df = pd.DataFrame({
+        comparison_df=pd.DataFrame({
 
-            "Model":["LSTM","Random Forest","XGBoost"],
+        "Model":["LSTM","GRU","Random Forest","XGBoost"],
 
-            "Predicted AQI":[
-                round(lstm_aqi,2),
-                round(rf_aqi,2),
-                round(xgb_aqi,2)
-            ],
+        "Predicted AQI":[
+        round(lstm_aqi,2),
+        round(gru_aqi,2),
+        round(rf_aqi,2),
+        round(xgb_aqi,2)
+        ],
 
-            "Category":[
-                lstm_category,
-                rf_category,
-                xgb_category
-            ]
+        "Category":[
+        lstm_category,
+        gru_category,
+        rf_category,
+        xgb_category
+        ]
         })
 
-        st.dataframe(comparison_df, use_container_width=True)
+        st.dataframe(comparison_df,use_container_width=True)
 
         # =========================
-        # HEALTH RISK ANALYSIS
+        # HEALTH ANALYSIS
         # =========================
         st.markdown('<div class="section-title">Health Risk Analysis</div>', unsafe_allow_html=True)
 
-        identified_risks = []
-        dangerous_pollutants = []
+        identified_risks=[]
+        dangerous_pollutants=[]
 
-        for pollutant, value in latest_pollutants.items():
+        for pollutant,value in latest_pollutants.items():
 
             if pollutant in pollutant_thresholds:
 
-                if value > pollutant_thresholds[pollutant]:
+                if value>pollutant_thresholds[pollutant]:
 
-                    dangerous_pollutants.append((pollutant, value))
+                    dangerous_pollutants.append((pollutant,value))
                     identified_risks.extend(pollutant_disease_risks[pollutant])
 
-        colA,colB = st.columns(2)
+        colA,colB=st.columns(2)
 
         with colA:
 
@@ -345,9 +398,9 @@ if predict:
 
             if dangerous_pollutants:
 
-                pollutants_df = pd.DataFrame(
-                    dangerous_pollutants,
-                    columns=["Pollutant","Level"]
+                pollutants_df=pd.DataFrame(
+                dangerous_pollutants,
+                columns=["Pollutant","Level"]
                 )
 
                 st.dataframe(pollutants_df)
@@ -363,7 +416,7 @@ if predict:
             if identified_risks:
 
                 for risk in set(identified_risks):
-                    st.write("•", risk)
+                    st.write("•",risk)
 
             else:
 
