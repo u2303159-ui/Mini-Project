@@ -3,79 +3,45 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import joblib
-from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras.models import load_model
 
 st.set_page_config(layout="wide", initial_sidebar_state="collapsed")
 
 # =========================
 # CUSTOM CSS
 # =========================
-st.markdown("""
-<style>
-.main-header {
-    background: linear-gradient(to right, #2c3e50, #4b6cb7);
-    padding: 18px;
-    border-radius: 12px;
-    color: white;
-    font-size: 26px;
-    font-weight: bold;
-    text-align: center;
-}
-
-.card {
-    padding: 20px;
-    border-radius: 14px;
-    text-align: center;
-    color: white;
-    font-weight: 600;
-}
-
-.section-title {
-    background-color: #1f2937;
-    padding: 12px;
-    border-radius: 10px;
-    color: white;
-    font-weight: 600;
-    margin-top: 30px;
-}
-</style>
-""", unsafe_allow_html=True)
+with open("styles.css") as f:
+    st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
 # =========================
 # LOAD DATA
 # =========================
-df = pd.read_csv("city_day.csv")
+df = pd.read_csv("dataset_clean1.csv")
 df["Date"] = pd.to_datetime(df["Date"])
 df = df.sort_values("Date")
 
-FEATURES = ["AQI","PM2.5","PM10","NO2","SO2","CO","O3"]
+FEATURES = ["AQI","PM2.5","PM10","NO2","SO2","CO","O3","NH3"]# FIXED WINDOW SIZE
 WINDOW = 7
 
-df = df[["City","Date"] + FEATURES]
+df = df[["city","Date"] + FEATURES]
 df = df.fillna(df.mean(numeric_only=True))
 
 # =========================
 # LOAD MODELS
 # =========================
 scaler = joblib.load("aqi_scaler.pkl")
-rf_model = joblib.load("random_forest_aqi_model.pkl")
-xgb_model = joblib.load("xgboost_aqi_model.pkl")
+rf_model = joblib.load("models/rf_model.pkl")
+xgb_model = joblib.load("models/xgb_model.pkl")
 feature_columns = joblib.load("feature_columns.pkl")
 
-# =========================
-# LSTM MODEL
-# =========================
-lstm_model = Sequential([
-    LSTM(64, activation="tanh", input_shape=(WINDOW, len(FEATURES))),
-    Dense(1)
-])
-lstm_model.load_weights("aqi_lstm_model.h5")
+lin_model = joblib.load("models/linear_model.pkl")
+svm_model = joblib.load("models/svm_model.pkl")
 
 # =========================
-# GRU MODEL
+# LOAD LSTM + GRU
 # =========================
-gru_model = load_model("aqi_gru_model.h5", compile=False)
+lstm_model = load_model("models/lstm_model.keras", compile=False)
+gru_model = load_model("models/gru_model.keras", compile=False)
 
 # =========================
 # AQI CATEGORY
@@ -151,6 +117,13 @@ pollutant_disease_risks = {
 "Lung inflammation",
 "Reduced lung function"
 ]
+,
+"NH3":[
+"Eye irritation",
+"Skin irritation",
+"Breathing difficulty",
+"Respiratory inflammation"
+]
 }
 
 pollutant_thresholds = {
@@ -159,7 +132,8 @@ pollutant_thresholds = {
 "NO2":80,
 "SO2":80,
 "CO":2,
-"O3":100
+"O3":100,
+"NH3":400
 }
 
 # =========================
@@ -176,7 +150,7 @@ unsafe_allow_html=True
 col1,col2 = st.columns([3,1])
 
 with col1:
-    cities = sorted(df["City"].unique())
+    cities = sorted(df["city"].unique())
     city = st.selectbox("Select City", cities)
 
 with col2:
@@ -187,7 +161,7 @@ with col2:
 # =========================
 if predict:
 
-    city_df = df[df["City"]==city].sort_values("Date")
+    city_df = df[df["city"]==city].sort_values("Date")
 
     if len(city_df) < WINDOW:
 
@@ -201,24 +175,24 @@ if predict:
         # =========================
         # LSTM
         # =========================
-        predictions_lstm=[]
-        current_window=input_scaled.copy()
+        predictions_lstm = []
+        current_window = input_scaled.copy()
 
         for _ in range(5):
 
-            reshaped=current_window.reshape(1,WINDOW,len(FEATURES))
-            pred_scaled=lstm_model.predict(reshaped,verbose=0)[0][0]
+            reshaped = current_window.reshape(1, WINDOW, len(FEATURES))
+            pred_scaled = lstm_model.predict(reshaped, verbose=0)[0][0]
 
-            aqi_mean=scaler.mean_[0]
-            aqi_std=scaler.scale_[0]
+            aqi_mean = scaler.mean_[0]
+            aqi_std = scaler.scale_[0]
 
-            pred_aqi=(pred_scaled*aqi_std)+aqi_mean
+            pred_aqi = (pred_scaled * aqi_std) + aqi_mean
             predictions_lstm.append(pred_aqi)
 
-            new_row=current_window[-1].copy()
-            new_row[0]=pred_scaled
+            new_row = current_window[-1].copy()
+            new_row[0] = pred_scaled
 
-            current_window=np.vstack([current_window[1:],new_row])
+            current_window = np.vstack([current_window[1:], new_row])
 
         lstm_aqi=float(predictions_lstm[-1])
         lstm_category=categorize_aqi(lstm_aqi)
@@ -253,24 +227,37 @@ if predict:
         # =========================
         # TREE MODELS
         # =========================
-        latest=city_df.tail(1).copy()
+        latest = city_df.tail(1).copy()
 
-        latest["Month"]=latest["Date"].dt.month
-        latest["DayOfWeek"]=latest["Date"].dt.dayofweek
+        latest["Month"] = latest["Date"].dt.month
+        latest["DayOfWeek"] = latest["Date"].dt.dayofweek
 
-        latest_input=latest[
-        ["City","PM2.5","PM10","NO2","SO2","CO","O3","Month","DayOfWeek"]
+        latest_input = latest[
+        ["city","PM2.5","PM10","NO2","NH3","CO","SO2","O3","Month","DayOfWeek"]
         ]
 
-        latest_input=pd.get_dummies(latest_input,columns=["City"],drop_first=True)
+        # One-hot encode city
+        latest_input = pd.get_dummies(latest_input, columns=["city"])
 
-        latest_input=latest_input.reindex(columns=feature_columns,fill_value=0)
+        # Add missing columns
+        for col in feature_columns:
+            if col not in latest_input.columns:
+                latest_input[col] = 0
+
+        # Ensure correct order
+        latest_input = latest_input[feature_columns]
 
         rf_aqi=float(rf_model.predict(latest_input)[0])
         rf_category=categorize_aqi(rf_aqi)
 
         xgb_aqi=float(xgb_model.predict(latest_input)[0])
         xgb_category=categorize_aqi(xgb_aqi)
+
+        lin_aqi = float(lin_model.predict(latest_input)[0])
+        lin_category = categorize_aqi(lin_aqi)
+
+        svm_aqi = float(svm_model.predict(latest_input)[0])
+        svm_category = categorize_aqi(svm_aqi)
 
         # =========================
         # KPI CARDS
@@ -305,15 +292,14 @@ if predict:
         # TREND GRAPH
         # =========================
         st.markdown(
-'       <div class="section-title">AQI Prediction Trend (All Models)</div>',
+        '<div class="section-title">AQI Prediction Trend (All Models)</div>',
         unsafe_allow_html=True
         )
 
-        days = list(range(1,6))
+        days = list(range(1,6))   # Next 5 days prediction
 
         fig = go.Figure()
 
-        # LSTM
         fig.add_trace(go.Scatter(
             x=days,
             y=predictions_lstm,
@@ -321,15 +307,13 @@ if predict:
             name="LSTM"
         ))
 
-        # GRU
         fig.add_trace(go.Scatter(
-         x=days,
+            x=days,
             y=predictions_gru,
             mode='lines+markers',
             name="GRU"
         ))
 
-        # Random Forest
         fig.add_trace(go.Scatter(
             x=days,
             y=[rf_aqi]*5,
@@ -337,13 +321,34 @@ if predict:
             name="Random Forest"
         ))
 
-        # XGBoost
         fig.add_trace(go.Scatter(
             x=days,
             y=[xgb_aqi]*5,
             mode='lines+markers',
             name="XGBoost"
         ))
+
+        fig.add_trace(go.Scatter(
+            x=days,
+            y=[lin_aqi]*5,
+            mode='lines+markers',
+            name="Linear Regression"
+        ))
+
+        fig.add_trace(go.Scatter(
+            x=days,
+            y=[svm_aqi]*5,
+            mode='lines+markers',
+            name="SVM"
+        ))
+
+        # Axis labels added here
+        fig.update_layout(
+            xaxis_title="Prediction Days (Next 5 Days)",
+            yaxis_title="AQI Value",
+            title="AQI Prediction Trend by Different Models",
+            height=450
+        )
 
         st.plotly_chart(fig, use_container_width=True)
 
@@ -354,20 +359,24 @@ if predict:
 
         comparison_df=pd.DataFrame({
 
-        "Model":["LSTM","GRU","Random Forest","XGBoost"],
+        "Model":["LSTM","GRU","Random Forest","XGBoost","Linear Regression","SVM"],
 
         "Predicted AQI":[
         round(lstm_aqi,2),
         round(gru_aqi,2),
         round(rf_aqi,2),
-        round(xgb_aqi,2)
+        round(xgb_aqi,2),
+        round(lin_aqi,2),
+        round(svm_aqi,2)
         ],
 
         "Category":[
         lstm_category,
         gru_category,
         rf_category,
-        xgb_category
+        xgb_category,
+        lin_category,
+        svm_category
         ]
         })
 
@@ -421,3 +430,34 @@ if predict:
             else:
 
                 st.success("No major health risks detected based on pollutant levels.")
+        
+        # =========================
+        # HIGH POLLUTANT BAR CHART
+        # =========================
+        st.markdown('<div class="section-title">High Pollutant Levels</div>', unsafe_allow_html=True)
+
+        if dangerous_pollutants:
+
+            pollutant_names = [p[0] for p in dangerous_pollutants]
+            pollutant_values = [p[1] for p in dangerous_pollutants]
+
+            fig_bar = go.Figure()
+
+            fig_bar.add_trace(go.Bar(
+                x=pollutant_names,
+                y=pollutant_values,
+                text=[round(v,2) for v in pollutant_values],
+                textposition='auto'
+            ))
+
+            fig_bar.update_layout(
+                title="Pollutants Exceeding Safe Limits",
+                xaxis_title="Pollutant",
+                yaxis_title="Concentration Level",
+                height=400
+            )
+
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+        else:
+            st.success("No pollutants exceed safe limits.")
